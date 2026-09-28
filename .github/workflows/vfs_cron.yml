@@ -1,0 +1,30 @@
+name: VFS Bulgaria Cloud Watcher
+
+on:
+  schedule:
+    # Her 10 dakikada bir otomatik uyanır ve 12 şehri tarar
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # İstediğiniz an tek tıkla test başlatabilmeniz için
+
+jobs:
+  check-vfs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Kodu Al
+        uses: actions/checkout@v4
+
+      - name: Python Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Paketleri Kur
+        run: |
+          pip install playwright requests
+          playwright install chromium --with-deps
+
+      - name: 12 Sehri Tara
+        run: |
+          python checker.py
