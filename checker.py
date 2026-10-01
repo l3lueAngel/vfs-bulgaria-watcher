@@ -14,7 +14,7 @@ def send_telegram(message, silent=False):
         "chat_id": TG_CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
-        "disable_notification": silent  # True ise sessiz gelir, ses ve titreşim yapmaz
+        "disable_notification": silent  # True ise sessiz iletilir, ses veya titreşim yapmaz
     }
     try:
         r = requests.post(url, json=payload, timeout=10)
@@ -109,17 +109,17 @@ def run_vfs_check():
             if not slot_found:
                 print("[*] Tarama bitti: 12 merkez şu an dolu.")
 
-                # HER 30 DAKİKADA BİR SESSİZ DURUM RAPORU
-                is_30min_slot = (now_tr.minute >= 0 and now_tr.minute < 15) or (now_tr.minute >= 30 and now_tr.minute < 45)
+                # HER 1 SAATTE BİR SESSİZ DURUM RAPORU (Sadece saat başlarında: 00..14 arası çalışmalarda)
+                is_hourly_slot = (now_tr.minute >= 0 and now_tr.minute < 15)
                 is_manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
-                if is_30min_slot or is_manual:
+                if is_hourly_slot or is_manual:
                     send_telegram(
-                        f"🔄 <b>VFS Bulgaria Durum Raporu ({time_str})</b>\n\n"
+                        f"🔄 <b>VFS Bulgaria Saatlik Durum Raporu ({time_str})</b>\n\n"
                         f"⏱️ <b>Durum:</b> Bot bulutta 7/24 aktif çalışıyor.\n"
                         f"📊 <b>Kontrol:</b> 12 merkez tarandı.\n"
                         f"❌ <b>Sonuç:</b> Henüz açık randevu yok.\n"
-                        f"🟢 <i>Açıldığı an sesli acil alarm çalacaktır! (Bu mesaj sessiz iletilmiştir).</i>",
+                        f"🟢 <i>Aralıksız tarama devam ediyor. Bu mesaj 1 saatlik sessiz rapordur.</i>",
                         silent=True
                     )
 
