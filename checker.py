@@ -137,3 +137,17 @@ def run_vfs_watcher():
 
 if __name__ == "__main__":
     run_vfs_watcher()
+
+
+    # Nöbet bittiğinde (randevu çıkmadıysa) Rapor gönder
+    if not slot_found:
+        now_tr = datetime.now(tz_tr)
+        report_title = "Manuel Test Raporu" if is_manual else "Saatlik Durum Raporu"
+        send_telegram(
+            f"🔄 <b>VFS Bulgaria {report_title} ({now_tr.strftime('%H:%M')})</b>\n\n"
+            f"⏱️ <b>Durum:</b> Bot bulutta aktif ({'Manuel test başarılı' if is_manual else 'Nöbet tamamlandı'}).\n"
+            f"📊 <b>Kontrol:</b> 12 merkez {TOTAL_CYCLES} kez tarandı.\n"
+            f"❌ <b>Sonuç:</b> Henüz açık randevu yok.\n"
+            f"🟢 <i>Aralıksız tarama sürüyor.</i>",
+            silent=(not is_manual)  # Manuel testlerde BİLDİRİMLİ ve SESLİ gitsin!
+        )
