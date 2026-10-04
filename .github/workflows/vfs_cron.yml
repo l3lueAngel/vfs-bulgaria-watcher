@@ -2,14 +2,14 @@ name: VFS Bulgaria Cloud Watcher
 
 on:
   schedule:
-    # Her 10 dakikada bir otomatik uyanır ve 12 şehri tarar
-    - cron: '*/10 * * * *'
-  workflow_dispatch: # İstediğiniz an tek tıkla test başlatabilmeniz için
+    # Her 45 dakikada bir yeni nöbetçi başlar
+    - cron: '*/45 * * * *'
+  workflow_dispatch:
 
 jobs:
   check-vfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 55
 
     steps:
       - name: Kodu Al
