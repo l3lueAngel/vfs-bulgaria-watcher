@@ -87,8 +87,9 @@ def run_vfs_watcher():
     print("[*] VFS Bulgaria Bulut Nöbetçisi Başlatılıyor...")
     tz_tr = timezone(timedelta(hours=3))
 
-    # Her çalıştığında ~40-45 dakika boyunca 8 tur tarama yapar (her tur arası 4.5 dk bekleme)
-    TOTAL_CYCLES = 8
+    # Elle test başlatıldıysa 1 turda (1 dk) bitirip raporlar, otomatik nöbette 8 tur (~40 dk) tarar
+    is_manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    TOTAL_CYCLES = 1 if is_manual else 8
     SLEEP_SECONDS = 270
 
     slot_found = False
