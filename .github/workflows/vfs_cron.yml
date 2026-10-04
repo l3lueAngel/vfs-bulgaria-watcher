@@ -2,18 +2,26 @@ name: VFS Bulgaria Cloud Watcher
 
 on:
   schedule:
-    # Her 45 dakikada bir yeni nöbetçi başlar
-    - cron: '*/45 * * * *'
+    # 10 dakikada bir otomatik taranır (yoğunluktan etkilenmemek için 3,13,23,33,43,53 dakikalarında)
+    - cron: '3,13,23,33,43,53 * * * *'
   workflow_dispatch:
 
 jobs:
   check-vfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 15
 
     steps:
       - name: Kodu Al
         uses: actions/checkout@v4
+
+      - name: Saatlik Hafızayı Yükle
+        uses: actions/cache@v4
+        with:
+          path: last_hour.txt
+          key: vfs-hour-${{ github.run_id }}
+          restore-keys: |
+            vfs-hour-
 
       - name: Python Kur
         uses: actions/setup-python@v5
