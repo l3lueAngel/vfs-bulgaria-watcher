@@ -22,77 +22,13 @@ def send_telegram(message, silent=False):
     except Exception as e:
         print(f"[Telegram] Error: {e}")
 
-def check_12_centres(page):
-    """12 merkezi sırayla tarar. Randevu bulursa tuple döner, bulamazsa False."""
-    page.wait_for_selector('select', timeout=20000)
-    selects = page.query_selector_all('select')
-    target_select = None
-    for s in selects:
-        txt = s.inner_text()
-        if "Ankara" in txt or "Edirne" in txt or "Istanbul" in txt:
-            target_select = s
-            break
-
-    if not target_select:
-        print("[-] 12 merkez kutusu bulunamadı.")
-        return None
-
-    options = target_select.query_selector_all('option')
-    valid_options = []
-    for opt in options:
-        val = opt.get_attribute("value")
-        text = opt.inner_text().strip()
-        if val and "choose" not in text.lower():
-            valid_options.append((val, text))
-
-    print(f"[+] {len(valid_options)} Merkez bulundu!")
-
-    for idx, (val, text) in enumerate(valid_options, 1):
-        city_name = text.replace("Bulgaria Visa Application Center", "").replace(",", "").strip()
-        print(f"[{idx}/{len(valid_options)}] Kontrol ediliyor: {city_name}...")
-
-        target_select.select_option(value=val)
-        target_select.dispatch_event("input")
-        target_select.dispatch_event("change")
-
-        time.sleep(4.5)
-
-        body_text = page.inner_text("body")
-        no_slot_words = [
-            "no appointment slots", "no slots available", 
-            "currently no slots", "uygun randevu bulunmamaktadır", "randevu bulunamadı"
-        ]
-        has_no_slot = any(w in body_text.lower() for w in no_slot_words)
-        date_match = re.search(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4}\b', body_text)
-
-        if not has_no_slot and date_match:
-            found_date = date_match.group(0)
-            print(f"[🎉] RANDEVU BULUNDU: {city_name} -> {found_date}")
-            send_telegram(
-                f"🇧🇬 🚨 <b>BULGARIA VISA C AÇILDI!</b> 🚨\n\n"
-                f"📍 <b>Şehir:</b> {city_name}\n"
-                f"📅 <b>Tarih:</b> {found_date}\n"
-                f"🎯 <b>Vize:</b> Short Stay Type C\n\n"
-                f"👉 <b>Hemen girip randevunuzu alın:</b>\n"
-                f"https://visa.vfsglobal.com/tur/en/bgr",
-                silent=False
-            )
-            return (city_name, found_date)
-        else:
-            print(f"[-] {city_name}: Randevu yok.")
-
-    return False
-
-def run_vfs_watcher():
-    print("[*] VFS Bulgaria Bulut Nöbetçisi Başlatılıyor...")
+def run_vfs_check():
+    print("[*] VFS Bulgaria 12-Centres Bulut Taraması Başlıyor...")
+    
     tz_tr = timezone(timedelta(hours=3))
-
-    # Elle test başlatıldıysa 1 turda (1 dk) bitirip raporlar, otomatik nöbette 8 tur (~40 dk) tarar
-    is_manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-    TOTAL_CYCLES = 1 if is_manual else 8
-    SLEEP_SECONDS = 270
-
-    slot_found = False
+    now_tr = datetime.now(tz_tr)
+    time_str = now_tr.strftime("%H:%M")
+    current_hour = now_tr.strftime("%Y-%m-%d-%H")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -103,38 +39,107 @@ def run_vfs_watcher():
         page = context.new_page()
 
         try:
-            for cycle in range(1, TOTAL_CYCLES + 1):
-                now_tr = datetime.now(tz_tr)
-                print(f"\n--- [DÖNGÜ {cycle}/{TOTAL_CYCLES}] - {now_tr.strftime('%H:%M:%S')} ---")
-                page.goto("https://visa.vfsglobal.com/tur/en/bgr", timeout=60000, wait_until="domcontentloaded")
-                time.sleep(5)
+            print("[*] VFS sayfasına bağlanılıyor...")
+            page.goto("https://visa.vfsglobal.com/tur/en/bgr", timeout=60000, wait_until="domcontentloaded")
+            time.sleep(5)
 
-                result = check_12_centres(page)
-                if result:
-                    slot_found = True
+            # 12 Merkezin olduğu açılır kutuyu bul
+            page.wait_for_selector('select', timeout=20000)
+            selects = page.query_selector_all('select')
+            target_select = None
+            for s in selects:
+                txt = s.inner_text()
+                if "Ankara" in txt or "Edirne" in txt or "Istanbul" in txt:
+                    target_select = s
                     break
 
-                if cycle < TOTAL_CYCLES:
-                    print(f"[*] Sonraki taramaya kadar {SLEEP_SECONDS} saniye bekleniyor...")
-                    time.sleep(SLEEP_SECONDS)
+            if not target_select:
+                print("[-] 12 merkez kutusu bulunamadı.")
+                return
+
+            options = target_select.query_selector_all('option')
+            valid_options = []
+            for opt in options:
+                val = opt.get_attribute("value")
+                text = opt.inner_text().strip()
+                if val and "choose" not in text.lower():
+                    valid_options.append((val, text))
+
+            print(f"[+] {len(valid_options)} Merkez bulundu!")
+
+            slot_found = False
+
+            # 12 Şehri tek tek tara
+            for idx, (val, text) in enumerate(valid_options, 1):
+                city_name = text.replace("Bulgaria Visa Application Center", "").replace(",", "").strip()
+                print(f"[{idx}/{len(valid_options)}] Kontrol ediliyor: {city_name}...")
+
+                target_select.select_option(value=val)
+                target_select.dispatch_event("input")
+                target_select.dispatch_event("change")
+
+                time.sleep(4.5)
+
+                body_text = page.inner_text("body")
+                no_slot_words = [
+                    "no appointment slots", "no slots available", 
+                    "currently no slots", "uygun randevu bulunmamaktadır", "randevu bulunamadı"
+                ]
+                has_no_slot = any(w in body_text.lower() for w in no_slot_words)
+                date_match = re.search(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4}\b', body_text)
+
+                if not has_no_slot and date_match:
+                    found_date = date_match.group(0)
+                    print(f"[🎉] RANDEVU BULUNDU: {city_name} -> {found_date}")
+                    # RANDEVU AÇILDI: SESLİ VE ACİL ALARM
+                    send_telegram(
+                        f"🇧🇬 🚨 <b>BULGARIA VISA C AÇILDI!</b> 🚨\n\n"
+                        f"📍 <b>Şehir:</b> {city_name}\n"
+                        f"📅 <b>Tarih:</b> {found_date}\n"
+                        f"🎯 <b>Vize:</b> Short Stay Type C\n\n"
+                        f"👉 <b>Hemen girip randevunuzu alın:</b>\n"
+                        f"https://visa.vfsglobal.com/tur/en/bgr",
+                        silent=False
+                    )
+                    slot_found = True
+                    break
+                else:
+                    print(f"[-] {city_name}: Randevu yok.")
+
+            if not slot_found:
+                print("[*] Tarama bitti: 12 merkez şu an dolu.")
+
+                # SAATLİK RAPOR KONTROLÜ (Her saatte 1 kez atar)
+                last_hour = ""
+                if os.path.exists("last_hour.txt"):
+                    try:
+                        with open("last_hour.txt", "r") as f:
+                            last_hour = f.read().strip()
+                    except Exception:
+                        pass
+
+                is_manual = (os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch")
+
+                if (current_hour != last_hour) or is_manual:
+                    report_title = "Manuel Test Raporu" if is_manual else "Saatlik Durum Raporu"
+                    send_telegram(
+                        f"🔄 <b>VFS Bulgaria {report_title} ({time_str})</b>\n\n"
+                        f"⏱️ <b>Durum:</b> Bot bulutta 7/24 aktif çalışıyor.\n"
+                        f"📊 <b>Kontrol:</b> 12 merkez tarandı.\n"
+                        f"❌ <b>Sonuç:</b> Henüz açık randevu yok.\n"
+                        f"🟢 <i>Aralıksız tarama devam ediyor. Bu mesaj {'test raporudur' if is_manual else 'saatlik sessiz rapordur'}.</i>",
+                        silent=(not is_manual)
+                    )
+                    try:
+                        with open("last_hour.txt", "w") as f:
+                            f.write(current_hour)
+                    except Exception:
+                        pass
 
         except Exception as e:
             print(f"[!] Hata: {e}")
         finally:
             browser.close()
 
-    # Nöbet bittiğinde (randevu çıkmadıysa) Raporu gönder
-    if not slot_found:
-        now_tr = datetime.now(tz_tr)
-        report_title = "Manuel Test Raporu" if is_manual else "Saatlik Durum Raporu"
-        send_telegram(
-            f"🔄 <b>VFS Bulgaria {report_title} ({now_tr.strftime('%H:%M')})</b>\n\n"
-            f"⏱️ <b>Durum:</b> Bot bulutta aktif ({'Manuel test başarılı' if is_manual else 'Nöbet tamamlandı'}).\n"
-            f"📊 <b>Kontrol:</b> 12 merkez {TOTAL_CYCLES} kez tarandı.\n"
-            f"❌ <b>Sonuç:</b> Henüz açık randevu yok.\n"
-            f"🟢 <i>Aralıksız tarama sürüyor.</i>",
-            silent=(not is_manual)  # Elle testte SESLİ & BİLDİRİMLİ, saatlik rutinde SESSİZ!
-        )
-
 if __name__ == "__main__":
-    run_vfs_watcher()
+    run_vfs_check()
