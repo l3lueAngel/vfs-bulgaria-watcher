@@ -123,23 +123,7 @@ def run_vfs_watcher():
         finally:
             browser.close()
 
-    # Nöbet bittiğinde (randevu çıkmadıysa) 1 SAATLİK SESSİZ RAPORU KESİN OLARAK GÖNDER
-    if not slot_found:
-        now_tr = datetime.now(tz_tr)
-        send_telegram(
-            f"🔄 <b>VFS Bulgaria Saatlik Durum Raporu ({now_tr.strftime('%H:%M')})</b>\n\n"
-            f"⏱️ <b>Durum:</b> Bot bulutta 7/24 aktif (Nöbet tamamlandı).\n"
-            f"📊 <b>Kontrol:</b> 12 merkez {TOTAL_CYCLES} kez tarandı (Toplam {TOTAL_CYCLES * 12} sorgu).\n"
-            f"❌ <b>Sonuç:</b> Henüz açık randevu yok.\n"
-            f"🟢 <i>Aralıksız tarama sürüyor. Bu mesaj saatlik sessiz rapordur.</i>",
-            silent=True
-        )
-
-if __name__ == "__main__":
-    run_vfs_watcher()
-
-
-    # Nöbet bittiğinde (randevu çıkmadıysa) Rapor gönder
+    # Nöbet bittiğinde (randevu çıkmadıysa) Raporu gönder
     if not slot_found:
         now_tr = datetime.now(tz_tr)
         report_title = "Manuel Test Raporu" if is_manual else "Saatlik Durum Raporu"
@@ -149,5 +133,8 @@ if __name__ == "__main__":
             f"📊 <b>Kontrol:</b> 12 merkez {TOTAL_CYCLES} kez tarandı.\n"
             f"❌ <b>Sonuç:</b> Henüz açık randevu yok.\n"
             f"🟢 <i>Aralıksız tarama sürüyor.</i>",
-            silent=(not is_manual)  # Manuel testlerde BİLDİRİMLİ ve SESLİ gitsin!
+            silent=(not is_manual)  # Elle testte SESLİ & BİLDİRİMLİ, saatlik rutinde SESSİZ!
         )
+
+if __name__ == "__main__":
+    run_vfs_watcher()
