@@ -23,9 +23,9 @@ def send_telegram(message, silent=False):
         print(f"[Telegram] Error: {e}")
 
 def run_vfs_check():
-    print("[*] VFS Bulgaria 12-Centres Bulut Taraması Başlıyor...")
+    print("[*] VFS Bulgaria 12-Centres Bulut TaramasÄ± BaÅŸlÄ±yor...")
     
-    # Türkiye saatini al (UTC+3)
+    # TÃ¼rkiye saatini al (UTC+3)
     tz_tr = timezone(timedelta(hours=3))
     now_tr = datetime.now(tz_tr)
     time_str = now_tr.strftime("%H:%M")
@@ -39,11 +39,11 @@ def run_vfs_check():
         page = context.new_page()
 
         try:
-            print("[*] VFS sayfasına bağlanılıyor...")
+            print("[*] VFS sayfasÄ±na baÄŸlanÄ±lÄ±yor...")
             page.goto("https://visa.vfsglobal.com/tur/en/bgr", timeout=60000, wait_until="domcontentloaded")
             time.sleep(5)
 
-            # 12 Merkezin olduğu açılır kutuyu bul
+            # 12 Merkezin olduÄŸu aÃ§Ä±lÄ±r kutuyu bul
             page.wait_for_selector('select', timeout=20000)
             selects = page.query_selector_all('select')
             target_select = None
@@ -54,7 +54,7 @@ def run_vfs_check():
                     break
 
             if not target_select:
-                print("[-] 12 merkez kutusu bulunamadı.")
+                print("[-] 12 merkez kutusu bulunamadÄ±.")
                 return
 
             options = target_select.query_selector_all('option')
@@ -69,7 +69,7 @@ def run_vfs_check():
 
             slot_found = False
 
-            # 12 Şehri tek tek sorgula
+            # 12 Åžehri tek tek sorgula
             for idx, (val, text) in enumerate(valid_options, 1):
                 city_name = text.replace("Bulgaria Visa Application Center", "").replace(",", "").strip()
                 print(f"[{idx}/{len(valid_options)}] Kontrol ediliyor: {city_name}...")
@@ -83,21 +83,21 @@ def run_vfs_check():
                 body_text = page.inner_text("body")
                 no_slot_words = [
                     "no appointment slots", "no slots available", 
-                    "currently no slots", "uygun randevu bulunmamaktadır", "randevu bulunamadı"
+                    "currently no slots", "uygun randevu bulunmamaktadÄ±r", "randevu bulunamadÄ±"
                 ]
                 has_no_slot = any(w in body_text.lower() for w in no_slot_words)
                 date_match = re.search(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4}\b', body_text)
 
                 if not has_no_slot and date_match:
                     found_date = date_match.group(0)
-                    print(f"[🎉] RANDEVU BULUNDU: {city_name} -> {found_date}")
-                    # GERÇEK RANDEVU: SESLİ VE ACİL BİLDİRİM
+                    print(f"[ðŸŽ‰] RANDEVU BULUNDU: {city_name} -> {found_date}")
+                    # GERÃ‡EK RANDEVU: SESLÄ° VE ACÄ°L BÄ°LDÄ°RÄ°M
                     send_telegram(
-                        f"🇧🇬 🚨 <b>BULGARIA VISA C AÇILDI!</b> 🚨\n\n"
-                        f"📍 <b>Şehir:</b> {city_name}\n"
-                        f"📅 <b>Tarih:</b> {found_date}\n"
-                        f"🎯 <b>Vize:</b> Short Stay Type C\n\n"
-                        f"👉 <b>Hemen girip randevunuzu alın:</b>\n"
+                        f"ðŸ‡§ðŸ‡¬ ðŸš¨ <b>BULGARIA VISA C AÃ‡ILDI!</b> ðŸš¨\n\n"
+                        f"ðŸ“ <b>Åžehir:</b> {city_name}\n"
+                        f"ðŸ“… <b>Tarih:</b> {found_date}\n"
+                        f"ðŸŽ¯ <b>Vize:</b> Short Stay Type C\n\n"
+                        f"ðŸ‘‰ <b>Hemen girip randevunuzu alÄ±n:</b>\n"
                         f"https://visa.vfsglobal.com/tur/en/bgr",
                         silent=False
                     )
@@ -107,21 +107,21 @@ def run_vfs_check():
                     print(f"[-] {city_name}: Randevu yok.")
 
             if not slot_found:
-                print("[*] Tarama bitti: 12 merkez şu an dolu.")
+                print("[*] Tarama bitti: 12 merkez ÅŸu an dolu.")
 
-                # HER 1 SAATTE BİR SESSİZ DURUM RAPORU (Sadece saat başlarında: :00 ile :09 arası)
+                # HER 1 SAATTE BÄ°R SESSÄ°Z DURUM RAPORU
+                # Sadece saat baÅŸlarÄ±ndaki kontrolde (:00 ile :09 arasÄ±) 1 kez sessiz rapor gider.
+                # DiÄŸer 10 dakikalÄ±k kontroller arkada sessizce biter, mesaj atmaz.
                 is_hourly_slot = (now_tr.minute < 10)
-                is_manual = (os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch")
 
-                if is_hourly_slot or is_manual:
-                    report_title = "Manuel Test Raporu" if is_manual else "Saatlik Durum Raporu"
+                if is_hourly_slot:
                     send_telegram(
-                        f"🔄 <b>VFS Bulgaria {report_title} ({time_str})</b>\n\n"
-                        f"⏱️ <b>Durum:</b> Bot bulutta 7/24 aktif çalışıyor.\n"
-                        f"📊 <b>Kontrol:</b> 12 merkez tarandı.\n"
-                        f"❌ <b>Sonuç:</b> Henüz açık randevu yok.\n"
-                        f"🟢 <i>Aralıksız tarama devam ediyor. Bu mesaj {'test bildirimidir' if is_manual else '1 saatlik sessiz rapordur'}.</i>",
-                        silent=(not is_manual)  # Elle test edersen SESLİ, saat başı otomatik raporda SESSİZ!
+                        f"ðŸ”„ <b>VFS Bulgaria Saatlik Durum Raporu ({time_str})</b>\n\n"
+                        f"â±ï¸ <b>Durum:</b> Bot bulutta 7/24 aktif Ã§alÄ±ÅŸÄ±yor.\n"
+                        f"ðŸ“Š <b>Kontrol:</b> 12 merkez baÅŸarÄ±yla tarandÄ±.\n"
+                        f"âŒ <b>SonuÃ§:</b> HenÃ¼z aÃ§Ä±k randevu yok.\n"
+                        f"ðŸŸ¢ <i>AralÄ±ksÄ±z tarama 10 dakikada bir devam ediyor. (Bu mesaj 1 saatlik sessiz rapordur).</i>",
+                        silent=True  # Saatlik raporlar her zaman SESSÄ°ZDÄ°R (ses/titreÅŸim yapmaz)
                     )
 
         except Exception as e:
