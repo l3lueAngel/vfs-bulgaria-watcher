@@ -200,6 +200,8 @@ def make_record_id(card):
 # =========================================================
 
 def fetch_visatour():
+    # ÖNEMLİ: Accept-Language tr-TR gönderilirse sayfa Türkçe etiketlerle döner.
+    # İngilizce (en-US) sabitleyerek ve regex'te her iki dili destekleyerek tam uyum sağlıyoruz.
     headers = {
         "User-Agent": (
             "Mozilla/5.0 "
@@ -212,9 +214,7 @@ def fetch_visatour():
             "text/html,application/xhtml+xml,"
             "application/xml;q=0.9,*/*;q=0.8"
         ),
-        "Accept-Language": (
-            "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
-        ),
+        "Accept-Language": "en-US,en;q=0.9",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
@@ -249,9 +249,9 @@ def parse_visatour_cards(page_html):
         r'<div class="card-surface"[^>]*>.*?'
         r'title="([^"]+)"[^>]*>\s*'
         r'([^<\r\n]+)\s*</span>.*?'
-        r'Earliest Date Opened:</span>\s*'
+        r'(?:Earliest Date Opened|A[^:<]*Tarih):</span>\s*'
         r'<strong[^>]*>([^<]+)</strong>.*?'
-        r'Center:</span>\s*'
+        r'(?:Center|Merkez):</span>\s*'
         r'<strong[^>]*>([^<]+)</strong>.*?'
         r'<span>'
         r'(\d{4}-\d{2}-\d{2}\s+'
@@ -532,8 +532,6 @@ def run():
     # HOURLY SILENT REPORT
     # -----------------------------------------------------
 
-    # Saat başındaki çalışmada (:00 - :09 arası ilk tetikleme) sessiz rapor gönder.
-    # Not: cron-job.org 10 dk veya 2 dk ayarlı olsa da saat başında çalışır.
     if (
         not new_cards
         and now_tr.minute < 2
