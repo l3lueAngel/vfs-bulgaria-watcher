@@ -1,30 +1,66 @@
-name: VFS Bulgaria Cloud Watcher
+name: VFS Bulgaria Cloud Watcher v3
 
 on:
-  schedule:
-    # Her 10 dakikada bir otomatik uyanır ve 12 şehri tarar
-    - cron: '*/10 * * * *'
-  workflow_dispatch: # İstediğiniz an tek tıkla test başlatabilmeniz için
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vfs-bulgaria-watcher
+  cancel-in-progress: false
 
 jobs:
   check-vfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
 
     steps:
-      - name: Kodu Al
+      - name: Kodu al
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Python Kur
+      - name: Python kur
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
-      - name: Paketleri Kur
-        run: |
-          pip install playwright requests
-          playwright install chromium --with-deps
+      - name: Requests kur
+        run: pip install requests
 
-      - name: 12 Sehri Tara
+      - name: Bulgaristan VFS taramasini calistir
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python checker.py
+
+      - name: State degistiyse kaydet
         run: |
-          python checker.py
+          if [ ! -f state.json ]; then
+            echo "state.json bulunamadi."
+            exit 0
+          fi
+
+          if git diff --quiet -- state.json; then
+            echo "State degismedi. Commit yok."
+            exit 0
+          fi
+
+          cp state.json /tmp/state.json
+
+          git config user.name "vfs-bulgaria-watcher"
+          git config user.email "vfs-bulgaria-watcher@users.noreply.github.com"
+
+          git fetch origin main
+          git checkout -B main origin/main
+          cp /tmp/state.json state.json
+
+          if git diff --quiet -- state.json; then
+            echo "State zaten guncel. Commit yok."
+            exit 0
+          fi
+
+          git add state.json
+          git commit -m "Update VFS watcher state"
+          git push origin HEAD:main
