@@ -1,13 +1,18 @@
 import os
-import time
 import re
 import html
+import json
+import hashlib
 import requests
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from playwright.sync_api import sync_playwright
 
-TG_BOT_TOKEN = "8918314722:AAEbbb81iUqvP2QU24vnrwDrt4m9TmQ4BIA"
-TG_CHAT_ID = "6769707789"
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+TZ_TR = timezone(timedelta(hours=3))
 
 VISATOUR_URL = (
     "https://alerts.visatour.org/"
@@ -15,190 +20,538 @@ VISATOUR_URL = (
     "&category=Application+with+Biometric+%28+Individual+-+Bireysel%29"
 )
 
-def send_telegram(message, silent=False):
-    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+VFS_LOGIN_URL = "https://visa.vfsglobal.com/tur/en/bgr/login"
+
+STATE_FILE = Path("state.json")
+
+# GitHub Secrets tanımlı değilse boş string ("") döneceği için `or` ile fallback kullanılır.
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or "8918314722:AAEbbb81iUqvP2QU24vnrwDrt4m9TmQ4BIA"
+TG_CHAT_ID = os.getenv("TG_CHAT_ID") or "6769707789"
+
+MAX_SEEN_RECORDS = 1000
+REQUEST_TIMEOUT = 20
+
+
+# =========================================================
+# TELEGRAM
+# =========================================================
+
+def send_telegram(message: str, silent: bool = False) -> bool:
+    """
+    Telegram'a mesaj gönderir.
+
+    silent=False -> gerçek slot alarmı
+    silent=True  -> durum/hata mesajları
+    """
+
+    if (
+        not TG_BOT_TOKEN
+        or TG_BOT_TOKEN == "BURAYA_BOT_TOKEN"
+        or not TG_CHAT_ID
+        or TG_CHAT_ID == "BURAYA_CHAT_ID"
+    ):
+        print("[!] Telegram token/chat ID ayarlanmamış.")
+        return False
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TG_BOT_TOKEN}/sendMessage"
+    )
+
     payload = {
         "chat_id": TG_CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
-        "disable_notification": silent
+        "disable_notification": silent,
+        "disable_web_page_preview": True,
     }
+
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        print(f"[Telegram] Status: {r.status_code} (Silent: {silent})")
-    except Exception as e:
-        print(f"[Telegram] Error: {e}")
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=REQUEST_TIMEOUT
+        )
+
+        print(
+            f"[Telegram] HTTP {response.status_code} "
+            f"(silent={silent})"
+        )
+
+        if not response.ok:
+            print(
+                "[Telegram ERROR]",
+                response.text[:500]
+            )
+
+        return response.ok
+
+    except Exception as exc:
+        print(
+            "[Telegram Exception]",
+            repr(exc)
+        )
+        return False
+
+
+# =========================================================
+# STATE
+# =========================================================
+
+def default_state():
+    return {
+        "version": 3,
+        "initialized": False,
+        "seen": []
+    }
+
+
+def load_state():
+    if not STATE_FILE.exists():
+        print("[State] state.json yok; ilk kurulum.")
+        return default_state()
+
+    try:
+        with STATE_FILE.open(
+            "r",
+            encoding="utf-8"
+        ) as f:
+            data = json.load(f)
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                "state.json root object değil."
+            )
+
+        data.setdefault("version", 3)
+        data.setdefault("initialized", False)
+        data.setdefault("seen", [])
+
+        if not isinstance(data["seen"], list):
+            raise ValueError(
+                "state.json seen list değil."
+            )
+
+        return data
+
+    except Exception as exc:
+        print(
+            "[State ERROR]",
+            repr(exc)
+        )
+        raise
+
+
+def save_state(state):
+    """
+    Sadece gerçekten state değiştiğinde çağrılır.
+    """
+
+    state["version"] = 3
+    state["seen"] = state["seen"][-MAX_SEEN_RECORDS:]
+
+    temp_file = STATE_FILE.with_suffix(".tmp")
+
+    with temp_file.open(
+        "w",
+        encoding="utf-8"
+    ) as f:
+        json.dump(
+            state,
+            f,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True
+        )
+        f.write("\n")
+
+    temp_file.replace(STATE_FILE)
+
+    print(
+        f"[State] Kaydedildi. "
+        f"Seen={len(state['seen'])}"
+    )
+
+
+# =========================================================
+# RECORD ID
+# =========================================================
+
+def make_record_id(card):
+    """
+    Aynı VisaTour kaydının her çalışmada aynı ID'yi
+    üretmesini sağlar.
+    """
+
+    raw = "|".join([
+        card["category"].strip(),
+        card["center"].strip(),
+        card["date_opened"].strip(),
+        card["reg_time"].strip(),
+    ])
+
+    return hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()
+
+
+# =========================================================
+# VISATOUR
+# =========================================================
+
+def fetch_visatour():
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,"
+            "application/xml;q=0.9,*/*;q=0.8"
+        ),
+        "Accept-Language": (
+            "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+        ),
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+    response = requests.get(
+        VISATOUR_URL,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT
+    )
+
+    print(
+        f"[VisaTour] HTTP {response.status_code} "
+        f"/ {len(response.text)} bytes"
+    )
+
+    response.raise_for_status()
+
+    if not response.text.strip():
+        raise RuntimeError(
+            "VisaTour boş HTML döndürdü."
+        )
+
+    return response.text
+
+
+# =========================================================
+# PARSER
+# =========================================================
 
 def parse_visatour_cards(page_html):
     card_pattern = re.compile(
         r'<div class="card-surface"[^>]*>.*?'
-        r'title="([^"]+)"[^>]*>\s*([^<\r\n]+)\s*</span>.*?'
-        r'Earliest Date Opened:</span>\s*<strong[^>]*>([^<]+)</strong>.*?'
-        r'Center:</span>\s*<strong[^>]*>([^<]+)</strong>.*?'
-        r'<span>(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})</span>',
-        re.DOTALL
+        r'title="([^"]+)"[^>]*>\s*'
+        r'([^<\r\n]+)\s*</span>.*?'
+        r'Earliest Date Opened:</span>\s*'
+        r'<strong[^>]*>([^<]+)</strong>.*?'
+        r'Center:</span>\s*'
+        r'<strong[^>]*>([^<]+)</strong>.*?'
+        r'<span>'
+        r'(\d{4}-\d{2}-\d{2}\s+'
+        r'\d{2}:\d{2}:\d{2})'
+        r'</span>',
+        re.DOTALL | re.IGNORECASE
     )
+
     cards = []
-    for m in card_pattern.finditer(page_html):
-        cat = html.unescape(m.group(1).strip())
-        date_opened = html.unescape(m.group(3).strip())
-        center = html.unescape(m.group(4).strip())
-        reg_time = m.group(5).strip()
-        if "individual" in cat.lower() or "bireysel" in cat.lower():
-            cards.append({
-                "category": cat,
-                "date_opened": date_opened,
-                "center": center,
-                "reg_time": reg_time
-            })
+
+    for match in card_pattern.finditer(page_html):
+        category = html.unescape(
+            match.group(1).strip()
+        )
+
+        date_opened = html.unescape(
+            match.group(3).strip()
+        )
+
+        center = html.unescape(
+            match.group(4).strip()
+        )
+
+        reg_time = match.group(5).strip()
+
+        category_lower = category.lower()
+
+        if (
+            "individual" not in category_lower
+            and "bireysel" not in category_lower
+        ):
+            continue
+
+        cards.append({
+            "category": category,
+            "date_opened": date_opened,
+            "center": center,
+            "reg_time": reg_time,
+        })
+
+    cards.sort(
+        key=lambda card: card["reg_time"]
+    )
+
     return cards
 
-def run_vfs_check():
-    print("[*] VFS Bulgaria (Application with Biometric - Individual) Taraması Başlıyor...")
 
-    # Türkiye saatini al (UTC+3)
-    tz_tr = timezone(timedelta(hours=3))
-    now_tr = datetime.now(tz_tr)
-    time_str = now_tr.strftime("%H:%M")
+# =========================================================
+# MESSAGE BUILDERS
+# =========================================================
 
-    slot_found = False
-    latest_record_info = "Henüz kayıt bulunamadı"
+def slot_message(card):
+    center = html.escape(card["center"])
+    opened = html.escape(card["date_opened"])
+    category = html.escape(card["category"])
+    reg_time = html.escape(card["reg_time"])
 
-    # 1. AŞAMA: VisaTour Canlı Akış Taraması (Application with Biometric - Individual)
-    print("[*] Aşama 1: alerts.visatour.org canlı tablosu kontrol ediliyor...")
-    visatour_html = ""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-        }
-        resp = requests.get(VISATOUR_URL, headers=headers, timeout=15)
-        if resp.status_code == 200 and "card-surface" in resp.text:
-            visatour_html = resp.text
-    except Exception as e:
-        print(f"[!] VisaTour HTTP bağlantı uyarısı: {e}")
+    return (
+        "🇧🇬 🚨 <b>BULGARİSTAN BİREYSEL "
+        "RANDEVU HAREKETİ!</b> 🚨\n\n"
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800}
+        f"📍 <b>Merkez:</b> {center}\n"
+        f"📅 <b>Açılan Tarih / Durum:</b> {opened}\n"
+        f"🎯 <b>Kategori:</b> {category}\n"
+        f"🕒 <b>VisaTour Tespit:</b> {reg_time}\n\n"
+
+        "🔥 <b>HEMEN VFS'YE GİR:</b>\n"
+        f"{VFS_LOGIN_URL}"
+    )
+
+
+def hourly_message(now_tr, cards):
+    if cards:
+        latest = max(
+            cards,
+            key=lambda card: card["reg_time"]
         )
-        page = context.new_page()
 
-        try:
-            # Eğer HTTP ile alınamadıysa Playwright ile al
-            if not visatour_html:
-                print("[*] VisaTour sayfası tarayıcı ile açılıyor...")
-                page.goto(VISATOUR_URL, timeout=45000, wait_until="domcontentloaded")
-                time.sleep(3)
-                visatour_html = page.content()
+        latest_text = (
+            f"{html.escape(latest['center'])} — "
+            f"{html.escape(latest['date_opened'])} "
+            f"({html.escape(latest['reg_time'])})"
+        )
+    else:
+        latest_text = "Kayıt okunamadı"
 
-            cards = parse_visatour_cards(visatour_html)
-            print(f"[+] VisaTour üzerinde {len(cards)} adet Bireysel (Individual) kayıt bulundu.")
+    return (
+        "🔄 <b>VFS Bulgaria Saatlik Durum</b>\n\n"
 
-            if cards:
-                top = cards[0]
-                latest_record_info = f"{top['center']} — {top['date_opened']} ({top['reg_time']})"
-                print(f"[*] En güncel bireysel kayıt: {latest_record_info}")
+        "🟢 <b>Bot:</b> Aktif\n"
+        "🎯 <b>Filtre:</b> "
+        "Application with Biometric "
+        "(Individual - Bireysel)\n"
 
-                # Son 12 dakika içinde yeni düşen kayıt var mı kontrol et
-                for c in cards:
-                    try:
-                        reg_dt = datetime.strptime(c["reg_time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz_tr)
-                        age_minutes = (now_tr - reg_dt).total_seconds() / 60.0
-                        if -2 <= age_minutes <= 12:
-                            print(f"[🎉] YENİ BİREYSEL RANDEVU YAKALANDI: {c['center']} -> {c['date_opened']} ({c['reg_time']})")
-                            send_telegram(
-                                f"🇧🇬 🚨 <b>BULGARIA BİREYSEL RANDEVU AÇILDI!</b> 🚨\n\n"
-                                f"📍 <b>Merkez:</b> {c['center']}\n"
-                                f"📅 <b>Açılan Tarih / Durum:</b> {c['date_opened']}\n"
-                                f"🎯 <b>Kategori:</b> {c['category']}\n"
-                                f"🕒 <b>Tespit Zamanı:</b> {c['reg_time']}\n\n"
-                                f"👉 <b>Hemen girip randevunuzu alın:</b>\n"
-                                f"https://visa.vfsglobal.com/tur/en/bgr/login",
-                                silent=False
-                            )
-                            slot_found = True
-                    except Exception as parse_err:
-                        print(f"[!] Tarih ayrıştırma hatası: {parse_err}")
+        "❌ <b>Son tarama:</b> "
+        "Yeni kayıt yok\n"
 
-            # 2. AŞAMA: VFS Global 12 Merkez Doğrudan Kontrol (Yedek Tarama)
-            if not slot_found:
-                print("[*] Aşama 2: VFS Global sayfası kontrol ediliyor...")
-                page.goto("https://visa.vfsglobal.com/tur/en/bgr", timeout=60000, wait_until="domcontentloaded")
-                time.sleep(5)
+        f"📌 <b>En son görünen kayıt:</b> "
+        f"{latest_text}\n"
 
-                selects = page.query_selector_all('select')
-                target_select = None
-                for s in selects:
-                    txt = s.inner_text()
-                    if "Ankara" in txt or "Edirne" in txt or "Istanbul" in txt:
-                        target_select = s
-                        break
+        f"🕒 <b>Kontrol:</b> "
+        f"{now_tr.strftime('%d.%m.%Y %H:%M')}\n\n"
 
-                if target_select:
-                    options = target_select.query_selector_all('option')
-                    valid_options = []
-                    for opt in options:
-                        val = opt.get_attribute("value")
-                        text = opt.inner_text().strip()
-                        if val and "choose" not in text.lower():
-                            valid_options.append((val, text))
+        "🔕 <i>Bu saatlik mesaj sessiz gönderildi.</i>"
+    )
 
-                    print(f"[+] VFS sayfasında {len(valid_options)} merkez kontrol ediliyor...")
-                    for idx, (val, text) in enumerate(valid_options, 1):
-                        city_name = text.replace("Bulgaria Visa Application Center", "").replace(",", "").strip()
-                        target_select.select_option(value=val)
-                        target_select.dispatch_event("input")
-                        target_select.dispatch_event("change")
-                        time.sleep(3.5)
 
-                        body_text = page.inner_text("body")
-                        no_slot_words = [
-                            "no appointment slots", "no slots available",
-                            "currently no slots", "uygun randevu bulunmamaktadır", "randevu bulunamadı"
-                        ]
-                        has_no_slot = any(w in body_text.lower() for w in no_slot_words)
-                        date_match = re.search(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4}\b', body_text)
+# =========================================================
+# MAIN
+# =========================================================
 
-                        if not has_no_slot and date_match:
-                            found_date = date_match.group(0)
-                            print(f"[🎉] VFS SAYFASINDA RANDEVU BULUNDU: {city_name} -> {found_date}")
-                            send_telegram(
-                                f"🇧🇬 🚨 <b>BULGARIA VISA C AÇILDI!</b> 🚨\n\n"
-                                f"📍 <b>Şehir:</b> {city_name}\n"
-                                f"📅 <b>Tarih:</b> {found_date}\n"
-                                f"🎯 <b>Kategori:</b> Application with Biometric (Individual - Bireysel)\n\n"
-                                f"👉 <b>Hemen girip randevunuzu alın:</b>\n"
-                                f"https://visa.vfsglobal.com/tur/en/bgr/login",
-                                silent=False
-                            )
-                            slot_found = True
-                            break
+def run():
+    now_tr = datetime.now(TZ_TR)
 
-            # 3. AŞAMA: SAATLİK SESSİZ DURUM RAPORU
-            if not slot_found:
-                print("[*] Tarama bitti: Şu an yeni açılan bireysel randevu yok.")
+    print("=" * 65)
+    print(
+        "VFS BULGARIA WATCHER v3",
+        now_tr.strftime("%Y-%m-%d %H:%M:%S")
+    )
+    print("=" * 65)
 
-                # Sadece saat başlarında (:00 ile :09 arası) ve çift mesaj olmaması için workflow_dispatch'te gönder
-                is_hourly_slot = (now_tr.minute < 10)
-                is_schedule_dup = (os.environ.get("GITHUB_EVENT_NAME") == "schedule")
+    try:
+        state = load_state()
 
-                if is_hourly_slot and not is_schedule_dup:
-                    send_telegram(
-                        f"🔄 <b>VFS Bulgaria Saatlik Durum Raporu ({time_str})</b>\n\n"
-                        f"⏱️ <b>Durum:</b> Bot 7/24 aktif çalışıyor.\n"
-                        f"🎯 <b>Filtre:</b> Application with Biometric (Individual - Bireysel)\n"
-                        f"❌ <b>Sonuç:</b> Son 10 dakikada yeni açılan randevu yok.\n"
-                        f"📌 <b>En Son Kayıt:</b> {latest_record_info}\n\n"
-                        f"🟢 <i>Aralıksız tarama 10 dakikada bir devam ediyor. (Bu mesaj 1 saatlik sessiz rapordur).</i>",
-                        silent=True
-                    )
+    except Exception as exc:
+        send_telegram(
+            "⚠️ <b>VFS Watcher teknik uyarı</b>\n\n"
+            "state.json okunamadı. "
+            "Yanlış randevu alarmı üretmemek için "
+            "bu tarama durduruldu.\n\n"
+            f"<code>{html.escape(str(exc))}</code>",
+            silent=True
+        )
+        raise
 
-        except Exception as e:
-            print(f"[!] Hata: {e}")
-        finally:
-            browser.close()
+    try:
+        page_html = fetch_visatour()
+
+    except Exception as exc:
+        print(
+            "[VisaTour ERROR]",
+            repr(exc)
+        )
+
+        send_telegram(
+            "⚠️ <b>VFS Watcher teknik uyarı</b>\n\n"
+            "VisaTour bu taramada okunamadı.\n"
+            "Bir sonraki çalışmada tekrar denenecek.\n\n"
+            f"<code>{html.escape(str(exc))}</code>",
+            silent=True
+        )
+        raise
+
+    cards = parse_visatour_cards(
+        page_html
+    )
+
+    print(
+        f"[Parser] {len(cards)} "
+        "Bireysel kayıt bulundu."
+    )
+
+    if not cards:
+        send_telegram(
+            "⚠️ <b>VFS Watcher parser uyarısı</b>\n\n"
+            "VisaTour açıldı fakat "
+            "<b>0 Bireysel kayıt</b> ayrıştırıldı.\n"
+            "HTML yapısı değişmiş olabilir.\n\n"
+            "🔕 Bu teknik uyarıdır; "
+            "randevu alarmı değildir.",
+            silent=True
+        )
+        return
+
+    # -----------------------------------------------------
+    # FIRST RUN / BASELINE
+    # -----------------------------------------------------
+
+    if not state["initialized"]:
+        print(
+            "[INIT] İlk çalıştırma. "
+            "Mevcut kayıtlar baseline yapılıyor."
+        )
+
+        baseline = []
+
+        for card in cards:
+            baseline.append(
+                make_record_id(card)
+            )
+
+        state["initialized"] = True
+        state["seen"] = baseline
+
+        save_state(state)
+
+        send_telegram(
+            "✅ <b>VFS Bulgaria Watcher v3 hazır</b>\n\n"
+            f"📚 {len(cards)} mevcut kayıt "
+            "baseline olarak kaydedildi.\n"
+
+            "🎯 Application with Biometric "
+            "(Individual - Bireysel)\n\n"
+
+            "Bundan sonra yalnızca "
+            "<b>yeni kayıtlar</b> "
+            "sesli alarm oluşturacak.",
+            silent=True
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # FIND NEW RECORDS
+    # -----------------------------------------------------
+
+    seen = set(
+        state["seen"]
+    )
+
+    new_cards = []
+
+    for card in cards:
+        record_id = make_record_id(card)
+
+        if record_id not in seen:
+            new_cards.append(
+                (record_id, card)
+            )
+
+    print(
+        f"[Result] Yeni kayıt: "
+        f"{len(new_cards)}"
+    )
+
+    # -----------------------------------------------------
+    # NEW SLOT
+    # -----------------------------------------------------
+
+    state_changed = False
+
+    for record_id, card in new_cards:
+        print(
+            "[NEW]",
+            card["center"],
+            card["date_opened"],
+            card["reg_time"]
+        )
+
+        delivered = send_telegram(
+            slot_message(card),
+            silent=False
+        )
+
+        if delivered:
+            seen.add(record_id)
+            state_changed = True
+        else:
+            print(
+                "[!] Telegram teslim edemedi. "
+                "Kayıt seen yapılmadı."
+            )
+
+    # -----------------------------------------------------
+    # SAVE ONLY IF CHANGED
+    # -----------------------------------------------------
+
+    if state_changed:
+        state["seen"] = list(seen)
+        save_state(state)
+    else:
+        print(
+            "[State] Değişiklik yok. "
+            "state.json yazılmadı."
+        )
+
+    # -----------------------------------------------------
+    # HOURLY SILENT REPORT
+    # -----------------------------------------------------
+
+    # Saat başındaki çalışmada (:00 - :09 arası ilk tetikleme) sessiz rapor gönder.
+    # Not: cron-job.org 10 dk veya 2 dk ayarlı olsa da saat başında çalışır.
+    if (
+        not new_cards
+        and now_tr.minute < 2
+    ):
+        print(
+            "[Hourly] Sessiz durum raporu."
+        )
+
+        send_telegram(
+            hourly_message(
+                now_tr,
+                cards
+            ),
+            silent=True
+        )
+
+    print("[DONE]")
+
 
 if __name__ == "__main__":
-    run_vfs_check()
+    run()
