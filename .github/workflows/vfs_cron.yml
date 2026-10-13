@@ -29,7 +29,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests
+          pip install -r requirements.txt
 
       - name: Run unit tests
         run: |
@@ -48,6 +48,10 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python checker.py
+
+      - name: Ensure cache dir exists
+        if: always()
+        run: mkdir -p .cache
 
       - name: Save outage cache
         if: always()
