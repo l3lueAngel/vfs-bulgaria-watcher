@@ -43,6 +43,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Run watcher
+        id: run_watcher
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
