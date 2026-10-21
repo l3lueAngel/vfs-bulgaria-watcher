@@ -105,7 +105,7 @@ def load_state():
         return default_state()
 
     try:
-        with STATE_FILE.open("r", encoding="utf-8") as f:
+        with STATE_FILE.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
 
         if not isinstance(data, dict):
@@ -157,7 +157,7 @@ def save_state(state):
 def load_outage_state():
     if OUTAGE_CACHE_FILE.exists():
         try:
-            with OUTAGE_CACHE_FILE.open("r", encoding="utf-8") as f:
+            with OUTAGE_CACHE_FILE.open("r", encoding="utf-8-sig") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     data.setdefault("consecutive_errors", 0)
