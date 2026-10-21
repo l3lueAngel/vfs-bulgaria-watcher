@@ -2,6 +2,12 @@ name: VFS Bulgaria Cloud Watcher
 
 on:
   workflow_dispatch:
+    inputs:
+      test_telegram:
+        description: 'Telegram test mesajı gönder'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -41,6 +47,39 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
+
+      - name: Test Telegram delivery
+        if: ${{ inputs.test_telegram }}
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os, sys, requests
+          token = os.getenv('TG_BOT_TOKEN', '').strip()
+          chat_id = os.getenv('TG_CHAT_ID', '').strip()
+          if not token or not chat_id:
+              print('Telegram test failed: TG_BOT_TOKEN or TG_CHAT_ID secret is empty.')
+              sys.exit(1)
+          try:
+              response = requests.post(
+                  f'https://api.telegram.org/bot{token}/sendMessage',
+                  json={'chat_id': chat_id, 'text': '✅ VFS Bulgaria Watcher: Telegram test mesajı başarılı.'},
+                  timeout=15,
+              )
+              try:
+                  data = response.json()
+              except ValueError:
+                  data = {}
+              if response.ok and data.get('ok'):
+                  print('Telegram test message delivered successfully.')
+              else:
+                  print(f"Telegram test failed: HTTP {response.status_code}; {data.get('description', 'No API description')}")
+                  sys.exit(1)
+          except requests.RequestException as exc:
+              print(f'Telegram test request failed: {type(exc).__name__}: {exc}')
+              sys.exit(1)
+          PY
 
       - name: Run watcher
         id: run_watcher
