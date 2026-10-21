@@ -61,13 +61,11 @@ SAMPLE_BIOMETRIC_HTML = """
 class TestWatcherV31(unittest.TestCase):
 
     def test_parser_filters_and_categories(self):
-        # 1. Test individual parsing & exclusion of without biometric / 0-12
         cards_ind = checker.parse_visatour_cards(SAMPLE_INDIVIDUAL_HTML)
         self.assertEqual(len(cards_ind), 2, "Without biometric ve 0-12 elenmeli, sadece 2 bireysel kalmali")
         self.assertEqual(cards_ind[0]["center"], "Edirne")
         self.assertEqual(cards_ind[1]["center"], "Istanbul Altunizade")
 
-        # 2. Test general biometric parsing & exclusion of child
         cards_bio = checker.parse_visatour_cards(SAMPLE_BIOMETRIC_HTML)
         self.assertEqual(len(cards_bio), 2, "Child kategorisi elenmeli, sadece 2 biyometrik kalmali")
         self.assertEqual(cards_bio[0]["center"], "Ankara")
@@ -114,8 +112,7 @@ class TestWatcherV31(unittest.TestCase):
         self.assertIn("Application with Biometric", msg_bio)
 
     def test_outage_error_tracking_flow(self):
-        # Test error tracking logic
-        mock_outage_state = {"consecutive_errors": 0, "outage_notified": False}
+        mock_outage_state = {"consecutive_errors": 0, "outage_notified": False, "last_hourly_hour": -1}
         telegram_calls = []
 
         def mock_send(msg, silent=False):
@@ -163,15 +160,15 @@ class TestWatcherV31(unittest.TestCase):
 
         hourly_time = datetime(2026, 10, 13, 15, 0, tzinfo=checker.TZ_TR) # minute 0 -> hourly report
 
-        with patch("checker.load_outage_state", return_value={"consecutive_errors": 0, "outage_notified": False}), \
+        with patch("checker.load_outage_state", return_value={"consecutive_errors": 0, "outage_notified": False, "last_hourly_hour": -1}), \
              patch("checker.save_outage_state"), \
              patch("checker.send_telegram", side_effect=mock_send):
 
             # When error happens at minute 0:
-            checker.handle_error(RuntimeError("HTTP 530"), hourly_time)
+            checker.handle_error(RuntimeError("HTTP 502 Bad Gateway"), hourly_time)
             self.assertEqual(len(telegram_calls), 1)
             self.assertTrue(telegram_calls[0]["silent"])
-            self.assertIn("Son kontrol VisaTour erişim hatası nedeniyle tamamlanamadı", telegram_calls[0]["msg"])
+            self.assertIn("VisaTour geçici olarak erişilemiyor", telegram_calls[0]["msg"])
 
 if __name__ == "__main__":
     unittest.main()
