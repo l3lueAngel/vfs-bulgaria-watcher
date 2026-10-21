@@ -147,64 +147,118 @@ def _find_timestamp(text):
 
 
 def check_official_vfs():
-    """Best-effort public-page check only. Never infer availability from an arbitrary date."""
+    """Check VFS public page and dynamically inspect its center selector; never treat a static date as a slot."""
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
         return [], f"Playwright import edilemedi: {exc}"
+
     findings = []
+    negative_patterns = [
+        r"no appointment slots", r"no slots available", r"currently no slots",
+        r"no appointment is available", r"no appointments available",
+        r"uygun randevu bulunmamaktadır", r"randevu bulunamadı",
+        r"there are no appointments", r"no availability"
+    ]
+    date_pattern = re.compile(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b")
+    center_pattern = re.compile(r"ankara|edirne|istanbul|izmir|antalya|gaziantep|bursa|trabzon|adana|bodrum|antalya|kayseri", re.I)
+
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(user_agent=USER_AGENT, viewport={"width": 1365, "height": 900})
             try:
-                response = page.goto(VFS_URL, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(2500)
+                response = page.goto(VFS_URL, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(3000)
                 status = response.status if response else "unknown"
-                body = page.locator("body").inner_text(timeout=10000)
-                print(f"[VFS] Public page HTTP {status}; {len(body)} chars")
                 if status != 200:
                     return [], f"VFS public page HTTP {status}"
-                # VFS's public landing page usually does not expose live appointment inventory.
-                # Positive signals must be explicit availability wording, not any date on the page.
-                positive_patterns = [
-                    r"appointments?\s+available",
-                    r"available\s+appointment\s+slots?",
-                    r"slots?\s+available\s+for\s+booking",
-                    r"randevu\s+slotları\s+mevcut",
-                    r"uygun\s+randevu\s+bulundu",
-                    r"randevu\s+alınabilir",
-                ]
-                negative_patterns = [
-                    r"no appointment slots",
-                    r"no slots available",
-                    r"currently no appointments",
-                    r"no appointment is available",
-                    r"uygun randevu bulunmamaktadır",
-                    r"randevu bulunamadı",
-                ]
-                low = body.lower()
-                explicit_positive = any(re.search(pattern, low, re.I) for pattern in positive_patterns)
+
+                baseline = page.locator("body").inner_text(timeout=10000)
+                print(f"[VFS] Public page HTTP {status}; {len(baseline)} chars")
+
+                # Retain explicit page-level signals, but ignore dates alone.
+                low = baseline.lower()
+                explicit_positive = any(re.search(pattern, low, re.I) for pattern in [
+                    r"appointments?\s+available", r"available\s+appointment\s+slots?",
+                    r"slots?\s+available\s+for\s+booking", r"randevu\s+slotları\s+mevcut",
+                    r"uygun\s+randevu\s+bulundu", r"randevu\s+alınabilir"
+                ])
                 explicit_negative = any(re.search(pattern, low, re.I) for pattern in negative_patterns)
                 if explicit_positive and not explicit_negative:
-                    # The public page may use generic wording; only report as a candidate and include page URL.
-                    findings.append({"source": "Official VFS", "category": "VFS public-page availability signal",
-                                     "center": "VFS Global Bulgaria (merkez teyidi gerekli)",
-                                     "date_opened": "VFS sayfasındaki açık müsaitlik ifadesi; randevu takviminde teyit edin",
-                                     "reg_time": now_tr().strftime("%Y-%m-%d %H:%M:%S"), "url": VFS_LOGIN_URL})
-                else:
-                    print("[VFS] Açık, güvenilir slot-müsaitlik ifadesi bulunmadı; rastgele tarih slot sayılmadı.")
-                # Inspect selectable centers and log them, but do not claim slots based on selector options.
+                    findings.append({
+                        "source": "Official VFS",
+                        "category": "VFS public-page availability signal",
+                        "center": "VFS Global Bulgaria (merkez teyidi gerekli)",
+                        "date_opened": "Açık müsaitlik ifadesi görüldü; takvimde teyit edin",
+                        "reg_time": now_tr().strftime("%Y-%m-%d %H:%M:%S"),
+                        "url": VFS_LOGIN_URL
+                    })
+
                 selects = page.locator("select")
                 print(f"[VFS] Public page select sayısı: {selects.count()}")
-                if not selects.count():
-                    print("[VFS] Merkez seçici yok; gerçek müsaitlik muhtemelen oturum açılmış takvimde.")
+                target_select = None
+                options = []
+                for i in range(selects.count()):
+                    sel = selects.nth(i)
+                    option_nodes = sel.locator("option")
+                    candidate_options = []
+                    for j in range(option_nodes.count()):
+                        opt = option_nodes.nth(j)
+                        value = (opt.get_attribute("value") or "").strip()
+                        label = (opt.inner_text() or "").strip()
+                        if value and label and not any(word in label.lower() for word in ("choose", "select", "please select")):
+                            candidate_options.append((value, label))
+                    joined = " ".join(label for _, label in candidate_options)
+                    if len(candidate_options) >= 2 and center_pattern.search(joined):
+                        target_select = sel
+                        options = candidate_options
+                        break
+
+                if target_select is None:
+                    print("[VFS] Merkez seçicisi bulunamadı; gerçek randevu takvimi giriş/oturum arkasında olabilir.")
+                else:
+                    print(f"[VFS] Merkez seçicisinde {len(options)} seçenek bulundu; tek tek kontrol ediliyor.")
+                    checked = 0
+                    for value, label in options:
+                        city = label.replace("Bulgaria Visa Application Center", "").replace(",", "").strip()
+                        try:
+                            target_select.select_option(value=value, timeout=5000)
+                            target_select.dispatch_event("input")
+                            target_select.dispatch_event("change")
+                            page.wait_for_timeout(3500)
+                            body = page.locator("body").inner_text(timeout=10000)
+                            if body == baseline:
+                                print(f"[VFS] {city}: seçim sonrası sayfa değişmedi; slot sinyali yok.")
+                                continue
+                            checked += 1
+                            lower = body.lower()
+                            no_slots = any(re.search(pattern, lower, re.I) for pattern in negative_patterns)
+                            dates = date_pattern.findall(body)
+                            # A date is only a candidate when changing the center altered the page
+                            # and no explicit no-slot message is present. Do not alert on the landing page's static dates.
+                            if dates and not no_slots:
+                                date_value = dates[-1]
+                                print(f"[VFS] Olası takvim sinyali: {city} -> {date_value}; kullanıcı girişinde teyit gerekli.")
+                                findings.append({
+                                    "source": "Official VFS",
+                                    "category": "Application with Biometric (Individual - Bireysel)",
+                                    "center": city,
+                                    "date_opened": f"Merkez seçimi sonrası görülen tarih: {date_value} (takvimde teyit gerekli)",
+                                    "reg_time": now_tr().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "url": VFS_LOGIN_URL
+                                })
+                                # Send one alert per run; subsequent checks can continue next run.
+                                break
+                            print(f"[VFS] {city}: açık slot sinyali yok.")
+                        except Exception as exc:
+                            print(f"[VFS] {city}: merkez kontrol hatası: {type(exc).__name__}")
+                    print(f"[VFS] Merkez kontrolü tamamlandı; dinamik değişiklik görülen merkez: {checked}")
             finally:
                 browser.close()
     except Exception as exc:
         return [], f"VFS kontrol hatası: {type(exc).__name__}: {exc}"
     return findings, None
-
 
 def load_outage():
     try:
