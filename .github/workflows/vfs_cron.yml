@@ -92,7 +92,7 @@ jobs:
           merged["initialized"] = bool(current.get("initialized") or generated.get("initialized"))
           merged["v3_1_baseline"] = bool(current.get("v3_1_baseline") or generated.get("v3_1_baseline"))
           merged["version"] = generated.get("version", current.get("version", "3.2"))
-          current_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+          current_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True) + chr(10), encoding="utf-8")
           print(f"Merged seen hashes: {len(merged['seen'])}")
           PY
 
