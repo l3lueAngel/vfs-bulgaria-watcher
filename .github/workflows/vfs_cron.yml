@@ -1,4 +1,4 @@
-name: VFS Bulgaria Watcher
+name: VFS Bulgaria Cloud Watcher
 
 on:
   workflow_dispatch:
@@ -11,12 +11,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  check-slots:
+  check-vfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
+    timeout-minutes: 8
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -24,24 +23,24 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
+          python-version: '3.11'
+
+      - name: Restore outage state cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/outage.json
+          key: outage-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            outage-state-
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+          python -m playwright install chromium --with-deps
 
-      - name: Run unit tests
-        run: |
-          python test_v3_1_logic.py
-
-      - name: Restore outage cache
-        uses: actions/cache/restore@v4
-        with:
-          path: .cache
-          key: outage-state-${{ github.run_id }}
-          restore-keys: |
-            outage-state-
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
 
       - name: Run watcher
         env:
@@ -49,44 +48,14 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python checker.py
 
-      - name: Ensure cache dir exists
-        if: always()
-        run: mkdir -p .cache
-
-      - name: Save outage cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .cache
-          key: outage-state-${{ github.run_id }}
-
-      - name: Commit and push state if changed
-        if: always()
+      - name: Commit state only if changed
         run: |
-          if [ ! -f state.json ]; then
-            echo "state.json bulunamadi."
-            exit 0
-          fi
-
-          if git diff --quiet -- state.json; then
-            echo "State degismedi. Commit yok."
-            exit 0
-          fi
-
-          echo "State degisti. Commit hazirlaniyor..."
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          cp state.json /tmp/state.json
-          git fetch origin main
-          git checkout -B main origin/main
-          cp /tmp/state.json state.json
-
-          if git diff --quiet -- state.json; then
-            echo "State zaten guncel. Commit yok."
-            exit 0
-          fi
-
+          git config user.name "vfs-watcher"
+          git config user.email "vfs-watcher@users.noreply.github.com"
           git add state.json
-          git commit -m "Update VFS watcher state"
-          git push origin HEAD:main
+          if ! git diff --cached --quiet; then
+            git commit -m "Update VFS watcher state"
+            git push
+          else
+            echo "No state changes; no commit."
+          fi
