@@ -46,16 +46,67 @@ jobs:
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: python checker.py
-
-      - name: Commit state only if changed
         run: |
+          if [ -z "$TG_BOT_TOKEN" ]; then echo "::warning::TG_BOT_TOKEN secret is missing"; fi
+          if [ -z "$TG_CHAT_ID" ]; then echo "::warning::TG_CHAT_ID secret is missing"; fi
+          python checker.py
+
+      # Merge the generated state with the latest main branch before pushing.
+      # This preserves seen hashes from both sides and retries concurrent updates.
+      - name: Merge and push state safely
+        if: always() && steps.run_watcher.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f state.json ]; then
+            echo "state.json missing; nothing to merge."
+            exit 0
+          fi
+
+          cp state.json /tmp/state-generated.json
           git config user.name "vfs-watcher"
           git config user.email "vfs-watcher@users.noreply.github.com"
-          git add state.json
-          if ! git diff --cached --quiet; then
+
+          for attempt in 1 2 3 4 5; do
+            echo "State sync attempt $attempt/5"
+            git fetch origin main
+            git checkout -B main origin/main
+
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          generated = json.loads(Path("/tmp/state-generated.json").read_text(encoding="utf-8"))
+          current_path = Path("state.json")
+          if current_path.exists():
+              current = json.loads(current_path.read_text(encoding="utf-8"))
+          else:
+              current = {}
+
+          seen = list(dict.fromkeys((current.get("seen") or []) + (generated.get("seen") or [])))
+          merged = dict(current)
+          merged.update({k: v for k, v in generated.items() if k not in ("seen",)})
+          merged["seen"] = seen[-1000:]
+          merged["initialized"] = bool(current.get("initialized") or generated.get("initialized"))
+          merged["v3_1_baseline"] = bool(current.get("v3_1_baseline") or generated.get("v3_1_baseline"))
+          merged["version"] = generated.get("version", current.get("version", "3.2"))
+          current_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+          print(f"Merged seen hashes: {len(merged['seen'])}")
+          PY
+
+            git add state.json
+            if git diff --cached --quiet; then
+              echo "State already up to date."
+              exit 0
+            fi
             git commit -m "Update VFS watcher state"
-            git push
-          else
-            echo "No state changes; no commit."
-          fi
+            if git push origin HEAD:main; then
+              echo "State pushed successfully."
+              exit 0
+            fi
+            echo "Push rejected; retrying against latest main."
+          done
+
+          echo "::error::Could not sync state after 5 attempts."
+          exit 1
